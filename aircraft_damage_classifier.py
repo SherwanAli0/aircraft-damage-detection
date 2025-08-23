@@ -1,15 +1,3 @@
-"""
-Aircraft Damage Classification and Captioning System
-====================================================
-Uses VGG16 for binary classification (dent/crack) and BLIP for image captioning.
-
-Results:
-- Classification achieved on aircraft damage images
-- Automatic caption generation for damage assessment
-- Integrated CNN + Transformer pipeline
-
-Author: [Your Name]
-"""
 
 import warnings
 import os
