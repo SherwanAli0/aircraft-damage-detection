@@ -1,6 +1,7 @@
 
 import warnings
 import os
+import math
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
 import tarfile
+import tempfile
 import urllib.request
 import shutil
 
@@ -26,10 +28,51 @@ N_EPOCHS = 5
 IMG_SIZE = (224, 224, 3)
 SEED_VALUE = 42
 
+DATASET_URL = "https://cf-courses-data.s3.us.cloud-object-storage.appdomain.cloud/ZjXM4RKxlBK9__ZjHBLl5A/aircraft-damage-dataset-v1.tar"
+DATASET_DIRNAME = "aircraft_damage_dataset_v1"
+DATASET_SPLITS = ("train", "valid", "test")
+
 # Set random seeds for reproducibility
 random.seed(SEED_VALUE)
 np.random.seed(SEED_VALUE)
 tf.random.set_seed(SEED_VALUE)
+
+
+def _is_dataset_dir(path):
+    """True if path looks like the extracted dataset (train/valid/test folders)."""
+    return all(os.path.isdir(os.path.join(path, split)) for split in DATASET_SPLITS)
+
+
+def _safe_extract(tar, dest):
+    """Extract a tar archive into dest, refusing members that would land outside it."""
+    dest_root = os.path.realpath(dest)
+    for member in tar.getmembers():
+        if not (member.isfile() or member.isdir()):
+            raise ValueError(f"Refusing to extract non-regular archive member: {member.name}")
+        target = os.path.realpath(os.path.join(dest_root, member.name))
+        if os.path.commonpath([dest_root, target]) != dest_root:
+            raise ValueError(f"Archive member would be extracted outside the target folder: {member.name}")
+    tar.extractall(dest_root)
+
+
+def decode_prediction(probability, class_indices):
+    """Map a sigmoid output to (class name, confidence).
+
+    class_indices is the Keras generator mapping {class name: index}. With
+    class_mode='binary' the sigmoid output is the probability of the class whose
+    index is 1; Keras scores a prediction as class 1 only when it is > 0.5, so
+    an exact 0.5 is assigned to class 0 here too.
+    """
+    if not class_indices or sorted(class_indices.values()) != [0, 1]:
+        raise ValueError(
+            "Class mapping unavailable: call setup_data_generators() first "
+            f"(got class_indices={class_indices!r})."
+        )
+    index_to_class = {index: name for name, index in class_indices.items()}
+    index = int(probability > 0.5)
+    confidence = probability if index == 1 else 1 - probability
+    return index_to_class[index], float(confidence)
+
 
 class AircraftDamageClassifier:
     """Complete pipeline for aircraft damage classification and captioning."""
@@ -39,22 +82,47 @@ class AircraftDamageClassifier:
         self.train_generator = None
         self.valid_generator = None
         self.test_generator = None
+        self.class_indices = None
         self.history = None
         self.blip_processor = None
         self.blip_model = None
         
-    def download_dataset(self):
-        """Download and extract aircraft damage dataset."""
-        url = "https://cf-courses-data.s3.us.cloud-object-storage.appdomain.cloud/ZjXM4RKxlBK9__ZjHBLl5A/aircraft-damage-dataset-v1.tar"
-        tar_filename = "aircraft_damage_dataset_v1.tar"
-        extracted_folder = "aircraft_damage_dataset_v1"
+    def download_dataset(self, data_dir="."):
+        """Download and extract the aircraft damage dataset into data_dir.
         
-        if os.path.exists(extracted_folder):
-            shutil.rmtree(extracted_folder)
+        Returns the path of the extracted dataset folder. A valid existing copy
+        is reused. Anything else already at that path is left untouched and an
+        error is raised. The archive is unpacked in a temporary folder inside
+        data_dir and only moved into place once it looks like the dataset.
+        """
+        data_dir = os.path.abspath(data_dir)
+        os.makedirs(data_dir, exist_ok=True)
+        extracted_folder = os.path.join(data_dir, DATASET_DIRNAME)
             
-        urllib.request.urlretrieve(url, tar_filename)
-        with tarfile.open(tar_filename, "r") as tar_ref:
-            tar_ref.extractall()
+        if os.path.isdir(extracted_folder) and _is_dataset_dir(extracted_folder):
+            print(f"Dataset already present at {extracted_folder}; reusing it")
+            return extracted_folder
+        if os.path.lexists(extracted_folder):
+            raise FileExistsError(
+                f"{extracted_folder} exists but is not the dataset (expected train/valid/test "
+                "folders). It was not modified; move it or pass a different data_dir."
+            )
+
+        staging = tempfile.mkdtemp(prefix=".dataset_download_", dir=data_dir)
+        try:
+            tar_path = os.path.join(staging, "aircraft_damage_dataset_v1.tar")
+            urllib.request.urlretrieve(DATASET_URL, tar_path)
+            unpacked = os.path.join(staging, "unpacked")
+            with tarfile.open(tar_path, "r") as tar_ref:
+                _safe_extract(tar_ref, unpacked)
+            candidate = os.path.join(unpacked, DATASET_DIRNAME)
+            if not _is_dataset_dir(candidate):
+                raise RuntimeError(
+                    f"Downloaded archive does not contain {DATASET_DIRNAME}/train, valid and test folders."
+                )
+            os.replace(candidate, extracted_folder)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         
         print("Dataset downloaded and extracted successfully")
         return extracted_folder
@@ -98,7 +166,18 @@ class AircraftDamageClassifier:
             shuffle=False
         )
         
+        # Keras assigns class indices from the sorted folder names; keep the
+        # training mapping so predictions are decoded the way the model was trained.
+        self.class_indices = dict(self.train_generator.class_indices)
+        for name, generator in (("validation", self.valid_generator), ("test", self.test_generator)):
+            if dict(generator.class_indices) != self.class_indices:
+                raise ValueError(
+                    f"{name} class mapping {dict(generator.class_indices)} differs from "
+                    f"training mapping {self.class_indices}"
+                )
+
         print(f"Data generators created:")
+        print(f"Class mapping: {self.class_indices}")
         print(f"Training samples: {self.train_generator.samples}")
         print(f"Validation samples: {self.valid_generator.samples}")
         print(f"Test samples: {self.test_generator.samples}")
@@ -155,14 +234,17 @@ class AircraftDamageClassifier:
         return self.history
     
     def evaluate_model(self):
-        """Evaluate model performance on test set."""
+        """Evaluate model performance on the whole test set (every image once)."""
         if not self.model:
             raise ValueError("Model not trained. Call train_model() first.")
         
-        test_loss, test_accuracy = self.model.evaluate(
-            self.test_generator, 
-            steps=self.test_generator.samples // self.test_generator.batch_size
-        )
+        generator = self.test_generator
+        if generator.samples == 0:
+            raise ValueError("Test generator contains no samples.")
+        # Round up so the final partial batch is evaluated as well.
+        steps = math.ceil(generator.samples / generator.batch_size)
+
+        test_loss, test_accuracy = self.model.evaluate(generator, steps=steps)
         
         print(f"Test Loss: {test_loss:.4f}")
         print(f"Test Accuracy: {test_accuracy:.4f}")
@@ -234,10 +316,9 @@ class AircraftDamageClassifier:
         img_array = tf.keras.utils.img_to_array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
         
-        # Classify damage
+        # Classify damage; the label comes from the mapping used in training
         prediction = self.model.predict(img_array)[0][0]
-        damage_type = "crack" if prediction > 0.5 else "dent"
-        confidence = prediction if prediction > 0.5 else 1 - prediction
+        damage_type, confidence = decode_prediction(prediction, self.class_indices)
         
         # Generate caption
         caption = self.generate_caption(image_path, "caption")
@@ -280,7 +361,10 @@ def main():
     classifier.setup_blip_model()
     
     # Demo prediction and captioning
-    sample_image = "aircraft_damage_dataset_v1/test/dent/149_22_JPG_jpg.rf.4899cbb6f4aad9588fa3811bb886c34d.jpg"
+    sample_image = os.path.join(
+        data_path, "test", "dent",
+        "149_22_JPG_jpg.rf.4899cbb6f4aad9588fa3811bb886c34d.jpg",
+    )
     if os.path.exists(sample_image):
         print(f"\nTesting complete pipeline on sample image...")
         result = classifier.predict_and_caption(sample_image)
