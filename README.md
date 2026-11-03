@@ -10,14 +10,14 @@ It is a learning project, not a maintenance tool: no inspection-workflow integra
 
 ```
 aircraft-damage-detection/
-├── aircraft_damage_classifier.py   # AircraftDamageClassifier class and main() pipeline
-├── requirements.txt                # Dependencies
-├── tests/test_regressions.py       # Offline tests (no dataset, weights or TensorFlow needed)
-├── Result/
-│   └── Model loss and accuracy.png # Training curves from an earlier run (see Results)
-├── Sample images/                  # Two example images from the dataset
-├── LICENSE
-└── README.md
++-- aircraft_damage_classifier.py   # AircraftDamageClassifier class and main() pipeline
++-- requirements.txt                # Dependencies
++-- tests/test_regressions.py       # Offline tests (no dataset, weights or TensorFlow needed)
++-- Result/
+|   +-- Model loss and accuracy.png # Training curves from an earlier run (see Results)
++-- Sample images/                  # Two example images from the dataset
++-- LICENSE
++-- README.md
 ```
 
 ## Requirements
@@ -73,9 +73,9 @@ print(f"Summary: {result['summary']}")
 
 ```
 aircraft_damage_dataset_v1/
-├── train/{dent,crack}/
-├── valid/{dent,crack}/
-└── test/{dent,crack}/
++-- train/{dent,crack}/
++-- valid/{dent,crack}/
++-- test/{dent,crack}/
 ```
 
 - Keras assigns class indices from the sorted folder names, so with these folder names `crack` is 0 and `dent` is 1. The model's single sigmoid output is the probability of class 1 (`dent`). The code prints the mapping when the generators are created and uses that same mapping to turn predictions into labels (a prediction above 0.5 is class 1, anything else class 0).
