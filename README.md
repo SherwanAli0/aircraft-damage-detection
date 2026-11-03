@@ -1,179 +1,118 @@
-# Aircraft Damage Classification System
+# Aircraft Damage Classification
 
-Computer vision system for automated damage assessment in aviation maintenance workflows using deep learning classification and natural language generation.
+A transfer-learning classifier that labels aircraft-surface images as **dent** or **crack** (VGG16 backbone, frozen ImageNet weights, small dense head), plus a BLIP image-captioning step that produces a short text description of the same image.
 
-## Project Overview
+This is coursework from the **IBM AI Engineering Professional Certificate**. The dataset is downloaded from IBM's course storage (URL in `aircraft_damage_classifier.py`). VGG16 (ImageNet weights) and BLIP (`Salesforce/blip-image-captioning-base`) are third-party pre-trained models that are used as they are, not trained here.
 
-This project addresses quality control challenges in aircraft maintenance by automating damage detection and documentation. The system processes aircraft imagery to classify damage types and generates structured assessment reports for maintenance workflows.
+It is a learning project, not a maintenance tool: no inspection-workflow integration, API, real-time capability or safety effectiveness has been built or measured.
 
-**Problem Statement:**
-Manual aircraft damage inspection is time-intensive and requires specialized expertise. This system automates the initial screening process while maintaining assessment quality standards.
+## What is in this repository
 
-**Solution:**
-- Binary classification system (dent vs crack detection)
-- Automated damage report generation
-- Streamlined integration with existing maintenance protocols
-
-## Technical Implementation
-
-**Architecture:**
-- **Classification Engine:** VGG16 convolutional backbone with custom dense layers
-- **Documentation System:** BLIP transformer model for damage descriptions
-- **Data Pipeline:** Automated preprocessing and batch processing capabilities
-
-**Model Specifications:**
 ```
-Foundation: VGG16 (ImageNet pretrained weights)
-Custom Layers: Dense(512) → Dropout(0.3) → Dense(512) → Dropout(0.3) → Dense(1)
-Optimization: Adam (lr=0.0001), Binary Crossentropy
-Input Format: RGB images (224×224 resolution)
-Training Strategy: Transfer learning with frozen base layers
+aircraft-damage-detection/
+├── aircraft_damage_classifier.py   # AircraftDamageClassifier class and main() pipeline
+├── requirements.txt                # Dependencies
+├── tests/test_regressions.py       # Offline tests (no dataset, weights or TensorFlow needed)
+├── Result/
+│   └── Model loss and accuracy.png # Training curves from an earlier run (see Results)
+├── Sample images/                  # Two example images from the dataset
+├── LICENSE
+└── README.md
 ```
 
-**Performance Metrics:**
-- Training methodology: Train/validation/test splits with cross-validation
-- Evaluation: Classification accuracy, precision/recall analysis
-- Dataset: Aircraft maintenance imagery with binary damage labels
-- Processing: Real-time inference capability
+## Requirements
+
+- Python 3.11 (TensorFlow does not support Python 3.14).
+- `pip install -r requirements.txt` installs TensorFlow, transformers, PyTorch (needed by the BLIP captioning code), Pillow, matplotlib and numpy. The BLIP classes in transformers need PyTorch and fail with an `ImportError` without it.
+- Environment used for the checks in this repository: Python 3.11.9, TensorFlow 2.21.0 (Keras 3.15.1), transformers 5.22.1, torch 2.15.0 (CPU), numpy 2.4.6, Pillow 13.0.0, matplotlib 3.11.2. In it the module imports, the offline tests pass, and the evaluation and label-decoding code was run with real Keras on a tiny synthetic dataset. The full pipeline (VGG16 weights, 5-epoch training on the real dataset, BLIP captioning) was not run.
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Run
+
+From the repository root:
+
+```bash
+python aircraft_damage_classifier.py
+```
+
+This downloads the dataset into the current directory (about 17 MB; see Data), downloads the VGG16 ImageNet weights and the BLIP model on first use, trains for 5 epochs, evaluates on the test split, shows the training curves, and classifies and captions one sample image. Training and BLIP are slow without a GPU.
 
 ## Usage
 
 ```python
-from damage_classifier import DamageClassifier
+from aircraft_damage_classifier import AircraftDamageClassifier
 
-# Initialize and train system
-classifier = DamageClassifier()
-data_path = classifier.get_data()
-classifier.setup_generators(data_path)
+classifier = AircraftDamageClassifier()
+data_path = classifier.download_dataset()          # extracts ./aircraft_damage_dataset_v1
+classifier.setup_data_generators(data_path)
 classifier.build_model()
-classifier.train()
+classifier.train_model()
+classifier.evaluate_model()                        # returns (test_loss, test_accuracy)
 
-# Analyze aircraft damage
-result = classifier.analyze_image("path/to/aircraft_image.jpg")
-print(f"Damage Type: {result['type']}")
+result = classifier.predict_and_caption(
+    "Sample images/149_22_JPG_jpg.rf.4899cbb6f4aad9588fa3811bb886c34d.jpg"
+)
+print(f"Damage type: {result['damage_type']}")
 print(f"Confidence: {result['confidence']:.3f}")
-print(f"Description: {result['caption']}")
+print(f"Caption: {result['caption']}")
+print(f"Summary: {result['summary']}")
 ```
 
-## System Requirements
+`predict_and_caption` returns a dictionary with the keys `damage_type`, `confidence`, `caption` and `summary`. The model must be trained in the same session; trained weights are not saved to disk.
 
-```
-tensorflow>=2.8.0
-transformers>=4.20.0
-pillow>=8.0.0
-matplotlib>=3.5.0
-numpy>=1.21.0
-```
+## Data
 
-## Dataset Structure
+- Source: `https://cf-courses-data.s3.us.cloud-object-storage.appdomain.cloud/ZjXM4RKxlBK9__ZjHBLl5A/aircraft-damage-dataset-v1.tar` (about 17.2 MB).
+- `download_dataset(data_dir=".")` unpacks it to `<data_dir>/aircraft_damage_dataset_v1/`. If a valid copy is already there it is reused. If a different folder with that name exists, it is left untouched and an error is raised. Nothing is moved into place unless the archive contains `train`, `valid` and `test` folders.
+- The dataset ships with fixed train, validation and test splits (the code does not create splits and does not use cross-validation):
 
 ```
 aircraft_damage_dataset_v1/
-├── train/
-│   ├── dent/     # Training images - structural dents
-│   └── crack/    # Training images - surface cracks
-├── valid/
-│   ├── dent/     # Validation images
-│   └── crack/
-└── test/
-    ├── dent/     # Test images
-    └── crack/
+├── train/{dent,crack}/
+├── valid/{dent,crack}/
+└── test/{dent,crack}/
 ```
 
-## Key Results
+- Keras assigns class indices from the sorted folder names, so with these folder names `crack` is 0 and `dent` is 1. The model's single sigmoid output is the probability of class 1 (`dent`). The code prints the mapping when the generators are created and uses that same mapping to turn predictions into labels (a prediction above 0.5 is class 1, anything else class 0).
 
-**Classification Performance:**
-- Binary damage type identification
-- Confidence scoring for maintenance decision support
-- Batch processing capabilities for large datasets
-
-**Documentation Generation:**
-- Automated damage descriptions
-- Structured reporting format
-- Integration-ready output formatting
-
-**Operational Benefits:**
-- Reduced manual inspection time
-- Standardized damage assessment criteria
-- Scalable processing for fleet maintenance
-
-## Project Structure
+## Model
 
 ```
-aircraft-damage-detection/
-├── README.md                 # Project documentation
-├── damage_classifier.py     # Main implementation
-├── requirements.txt         # Dependencies
-└── results/                 # Generated outputs
-    ├── accuracy_plots.png   # Training visualization
-    └── sample_results.png   # Classification examples
+Backbone:  VGG16, ImageNet weights, no top, layers frozen
+Head:      GlobalAveragePooling2D -> Dense(512) -> Dropout(0.3) -> Dense(512) -> Dropout(0.3) -> Dense(1, sigmoid)
+Input:     RGB 224x224, pixels rescaled to [0, 1]
+Training:  Adam (lr 0.0001), binary cross-entropy, batch size 32, 5 epochs, seed 42
 ```
 
-## Technical Approach
+## Results
 
-**Data Preprocessing:**
-- Image normalization and resizing
-- Automated train/validation/test splitting
-- Batch processing optimization
+The only recorded result is `Result/Model loss and accuracy.png`, which matches the output of `plot_training_curves()`. Read off the plot, after 5 epochs training accuracy is roughly 0.57 and validation accuracy roughly 0.59, with loss around 0.67. That is only modestly better than chance for a two-class problem.
 
-**Model Development:**
-- Transfer learning implementation
-- Custom classification head design
-- Hyperparameter optimization
+- No log, saved model or test-set metric accompanies the plot, and the run has not been reproduced since. Treat the plot as a historical result.
+- Precision/recall, per-class results and caption quality have not been measured.
+- Earlier versions of the script evaluated only complete batches of the test set and mapped sigmoid outputs to labels in the wrong direction (`crack` for values above 0.5, although with the `crack`/`dent` folders above index 1 is `dent`). Both are fixed; numbers or labels produced by the old code are not comparable.
 
-**Integration Design:**
-- Modular architecture for maintenance system integration
-- Standardized API endpoints
-- Configurable confidence thresholds
+## Tests
 
-## Applications
+```bash
+pip install pytest
+python -m pytest tests
+```
 
-**Primary Use Cases:**
-- Aviation maintenance quality control
-- Fleet inspection automation
-- Damage documentation workflows
-- Maintenance scheduling optimization
+The tests use stand-ins for TensorFlow, BLIP and the download, so they need no dataset, model weights or GPU. They cover evaluation of the final partial test batch, label decoding against the real and a reversed class mapping, the dataset download/extract safeguards, and that the Usage example above matches the code.
 
-**Industry Applications:**
-- Commercial aviation maintenance
-- Military aircraft inspection
-- Aircraft manufacturing quality assurance
-- Insurance damage assessment
+## Limitations
 
-## Future Development
+- Small binary dataset (dent vs crack); no other damage types or severity levels.
+- Accuracy is low in the recorded run; the model is not suitable for any real inspection decision.
+- Captions come from a general-purpose BLIP model and have not been evaluated for aviation accuracy.
+- The BLIP prompts and 0.5 decision threshold are fixed in the code.
 
-**Planned Enhancements:**
-- Multi-class damage classification (beyond binary)
-- Severity assessment integration
-- Mobile deployment capabilities
-- Real-time processing optimization
+## License
 
-**Scalability Considerations:**
-- Cloud deployment architecture
-- Batch processing optimization
-- Integration with maintenance management systems
-- Performance monitoring and model updates
-
-## Certification
-
-This project was completed as part of the **IBM AI Engineering Professional Certificate** program, specifically the "Introduction to Deep Learning & Neural Networks with Keras" course. The project demonstrates practical application of:
-
-- Transfer learning techniques
-- Computer vision pipeline development
-- Multi-modal AI system integration
-- Industrial problem-solving approaches
-
-## Learning Outcomes
-
-This project showcases proficiency in:
-
-- End-to-end deep learning pipeline development
-- Transfer learning with pre-trained models
-- Computer vision for industrial applications
-- Natural language generation integration
-- Professional code organization and documentation
-- Real-world problem-solving with AI technologies
-
-## Contact
-
-This project demonstrates comprehensive computer vision system development for industrial applications, completed as part of professional AI engineering certification.
+The code in this repository is released under the MIT License (see `LICENSE`). The dataset, the VGG16 weights and the BLIP model are not covered by it and remain under their own terms.

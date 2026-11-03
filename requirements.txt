@@ -1,5 +1,6 @@
 tensorflow>=2.8.0
 transformers>=4.20.0
+torch
 pillow>=8.0.0
 matplotlib>=3.5.0
 numpy>=1.21.0
