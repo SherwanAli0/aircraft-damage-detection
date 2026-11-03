@@ -209,7 +209,11 @@ def _patch_download(mod, monkeypatch, members):
     return calls
 
 
+# the real archive has one top-level folder with explicit folder entries and plain files
 VALID_MEMBERS = [
+    ("aircraft_damage_dataset_v1", None),
+    ("aircraft_damage_dataset_v1/train", None),
+    ("aircraft_damage_dataset_v1/train/dent", None),
     ("aircraft_damage_dataset_v1/train/dent/a.jpg", b"x"),
     ("aircraft_damage_dataset_v1/valid/dent/b.jpg", b"x"),
     ("aircraft_damage_dataset_v1/test/dent/c.jpg", b"x"),
